@@ -1,152 +1,87 @@
 import os
 import asyncio
-import traceback # импортируем модуль для вывода детальных ошибок
+import traceback
 from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
 
-# --- ОТЛАДОЧНЫЙ ВЫВОД: Проверяем, что скрипт вообще запускается ---
-print("--- Скрипт api/index.py запущен ---")
+# === Инициализация Flask ===
+# Мы создаем приложение Flask сразу, чтобы убедиться, что оно работает.
+app = Flask(__name__)
 
-try:
-    # === НАСТРОЙКИ: Переменные окружения Vercel ===
-    BOT_TOKEN = os.environ.get('BOT_TOKEN')
-    SUPABASE_URL = os.environ.get('SUPABASE_URL')
-    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
-    ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '')
-
-    # --- ОТЛАДОЧНЫЙ ВЫВОД: Показываем, что мы получили из переменных ---
-    print(f"BOT_TOKEN найден: {'Да' if BOT_TOKEN else 'Нет'}")
-    print(f"SUPABASE_URL найден: {'Да' if SUPABASE_URL else 'Нет'}")
-    print(f"SUPABASE_KEY найден: {'Да' if SUPABASE_KEY else 'Нет'}")
-    print(f"Получена строка ADMIN_IDS: '{ADMIN_IDS_STR}'")
-
-    # --- Превращаем строку в список ID с защитой от ошибок ---
-    ADMIN_IDS = []
-    if ADMIN_IDS_STR:
-        try:
-            # Превращаем строку в список целых чисел. Пропускаем пустые элементы.
-            ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
-            print(f"Список ADMIN_IDS успешно создан: {ADMIN_IDS}")
-        except ValueError as e:
-            print(f"!!! КРИТИЧЕСКАЯ ОШИБКА: Не удалось преобразовать ADMIN_IDS в числа. Проверьте формат строки! Ошибка: {e}")
-            ADMIN_IDS = [] # В случае ошибки оставляем список админов пустым
-
-    # === ИНИЦИАЛИЗАЦИЯ ===
-    bot = Bot(token=BOT_TOKEN)
-    app = Flask(__name__)
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("--- Клиенты Bot и Supabase успешно инициализированы ---")
-
-except Exception as e:
-    # Эта ловушка сработает, если ошибка произошла на самом верхнем уровне (например, нет ключей)
-    print(f"!!! КРИТИЧЕСКАЯ ОШИБКА ПРИ ИНИЦИАЛИЗАЦИИ: {e}")
-    traceback.print_exc()
+# === Тестовый маршрут для проверки "здоровья" приложения ===
+@app.route('/hello', methods=['GET'])
+def hello():
+    """Простая функция, чтобы проверить, что сервер вообще жив."""
+    print("--- Запрос к /hello получен! ---")
+    return "Hello, Vercel server is running!", 200
 
 
-# --- Функции для работы с базой (без изменений) ---
-async def save_user_async(user_id: int):
-    # ... (код функции без изменений)
-    try:
-        await asyncio.to_thread(
-            supabase.table('users').upsert,
-            {'chat_id': user_id},
-            on_conflict='chat_id'
-        )
-        print(f"Сохранен или обновлен пользователь с ID: {user_id}")
-    except Exception as e:
-        print(f"Ошибка при сохранении пользователя {user_id} в Supabase: {e}")
-# ... (остальные async функции без изменений)
-async def get_all_user_ids_async() -> list[int]:
-    try:
-        response = await asyncio.to_thread(
-            supabase.table('users').select('chat_id').execute
-        )
-        user_ids = [item['chat_id'] for item in response.data]
-        return user_ids
-    except Exception as e:
-        print(f"Ошибка при получении ID пользователей из Supabase: {e}")
-        return []
-
-async def remove_user_async(user_id: int):
-    try:
-        await asyncio.to_thread(
-            supabase.table('users').delete().eq('chat_id', user_id).execute
-        )
-        print(f"Пользователь {user_id} удален из базы, так как заблокировал бота.")
-    except Exception as e:
-        print(f"Ошибка при удалении пользователя {user_id}: {e}")
-        
-async def handle_start_async(update: Update):
-    user_id = update.message.chat_id
-    await save_user_async(user_id)
-    keyboard = [
-        [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
-        [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url="https://baza-znaniy-app.vercel.app/"))],
-        [KeyboardButton("Отзывы и предложения", web_app=WebAppInfo(url="https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"))]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text(
-        "Привет! 😊\n\n"
-        "Чтобы открыть главный дашборд, нажми на кнопку **Дашборд** слева от поля ввода.\n\n"
-        "А с помощью кнопок ниже ты можешь открыть другие полезные разделы.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def broadcast_message_async(message_text: str):
-    user_ids = await get_all_user_ids_async()
-    print(f"Начинаю рассылку для {len(user_ids)} пользователей.")
-    for user_id in user_ids:
-        try:
-            await bot.send_message(chat_id=user_id, text=message_text, parse_mode='Markdown')
-            await asyncio.sleep(0.1)
-        except error.Forbidden:
-            await remove_user_async(user_id)
-        except error.TelegramError as e:
-            print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
-async def handle_admin_command_async(update: Update):
-    if update.message.chat_id not in ADMIN_IDS:
-        return
-    text_parts = update.message.text.split(' ', 1)
-    command = text_parts[0]
-    if command == '/broadcast' and len(text_parts) > 1:
-        message_to_send = text_parts[1]
-        await update.message.reply_text("Начинаю рассылку...")
-        await broadcast_message_async(message_to_send)
-        await update.message.reply_text("Рассылка завершена.")
-    elif command == '/stats':
-        user_ids = await get_all_user_ids_async()
-        await update.message.reply_text(f"Всего пользователей в базе: {len(user_ids)}")
-    else:
-        await update.message.reply_text(
-            "Неизвестная команда или неверный формат.\n"
-            "Доступные команды:\n"
-            "`/broadcast <текст сообщения>`\n"
-            "`/stats`",
-            parse_mode='Markdown'
-        )
-
-# --- ГЛАВНЫЙ ВЕБХУК ДЛЯ VERCEL ---
+# === Основной вебхук для Telegram ===
 @app.route('/', methods=['POST'])
 def webhook():
-    # --- ОТЛАДОЧНЫЙ ВЫВОД: Проверяем, что вебхук вызывается ---
-    print("--- Входящий запрос в /webhook ---")
+    """Эта функция будет обрабатывать все запросы от Telegram."""
+    print("--- Входящий POST-запрос в / ---")
+    
+    # Мы помещаем ВСЮ логику инициализации и обработки ВНУТРЬ try...except
+    # Это наша лучшая попытка поймать ошибку, где бы она ни была.
     try:
-        update_data = request.get_json()
-        if update_data:
-            update = Update.de_json(update_data, bot)
-            if update.message and update.message.text:
-                text = update.message.text
-                print(f"Получено сообщение: '{text}' от пользователя {update.message.chat_id}")
-                if text == '/start':
-                    asyncio.run(handle_start_async(update))
-                elif text.startswith('/'):
-                    asyncio.run(handle_admin_command_async(update))
-    except Exception as e:
-        # Эта ловушка поймает любую ошибку внутри вебхука
-        print(f"!!! КРИТИЧЕСКАЯ ОШИБКА ВНУТРИ ВЕБХУКА: {e}")
-        traceback.print_exc() # Печатаем полную трассировку ошибки
+        # --- Шаг 1: Инициализация клиентов внутри запроса ---
+        print("Шаг 1: Загрузка переменных окружения.")
+        BOT_TOKEN = os.environ.get('BOT_TOKEN')
+        SUPABASE_URL = os.environ.get('SUPABASE_URL')
+        SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+        ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '')
+
+        if not all([BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, ADMIN_IDS_STR]):
+            print("!!! КРИТИЧЕСКАЯ ОШИБКА: Одна или несколько переменных окружения не найдены!")
+            return "Configuration error", 500
+
+        print("Шаг 2: Создание клиентов Bot и Supabase.")
+        bot = Bot(token=BOT_TOKEN)
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         
-    return 'ok', 200
+        print(f"Шаг 3: Обработка строки ADMIN_IDS: '{ADMIN_IDS_STR}'")
+        ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
+        print(f"Список админов: {ADMIN_IDS}")
+
+        # --- Шаг 2: Обработка запроса от Telegram ---
+        print("Шаг 4: Обработка данных от Telegram.")
+        update_data = request.get_json()
+        if not update_data:
+            print("Ошибка: Тело запроса пустое.")
+            return "ok", 200
+
+        update = Update.de_json(update_data, bot)
+        if not (update.message and update.message.text):
+            print("Обновление не содержит текстового сообщения.")
+            return "ok", 200
+
+        # --- Шаг 3: Выполнение логики бота ---
+        text = update.message.text
+        user_id = update.message.chat_id
+        print(f"Получено сообщение '{text}' от пользователя {user_id}")
+
+        # Всю логику (сохранение, рассылка) нужно было бы перенести сюда,
+        # но для начала давайте просто убедимся, что этот блок работает.
+
+        # --- Сохранение пользователя ---
+        print(f"Попытка сохранить пользователя {user_id} в Supabase.")
+        supabase.table('users').upsert({'chat_id': user_id}, on_conflict='chat_id').execute()
+        print(f"Пользователь {user_id} успешно сохранен/обновлен.")
+        
+        # --- Ответ пользователю ---
+        if text == '/start':
+            # Для простоты пока отправим простой ответ
+            bot.send_message(chat_id=user_id, text="Бот работает! Ваш ID сохранен.")
+        
+        elif text.startswith('/') and user_id in ADMIN_IDS:
+             bot.send_message(chat_id=user_id, text="Команда администратора получена.")
+
+    except Exception as e:
+        # Если что-то сломается на любом из шагов, мы увидим детальную ошибку
+        print("--- !!! ПРОИЗОШЛА КРИТИЧЕСКАЯ ОШИБКА !!! ---")
+        # Эта функция выведет ПОЛНУЮ информацию об ошибке в логи
+        print(traceback.format_exc())
+        
+    return "ok", 200
