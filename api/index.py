@@ -1,36 +1,52 @@
 import os
 import asyncio
+import traceback # импортируем модуль для вывода детальных ошибок
 from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
 
-# === НАСТРОЙКИ: Переменные окружения Vercel ===
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-SUPABASE_URL = os.environ.get('SUPABASE_URL')
-SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+# --- ОТЛАДОЧНЫЙ ВЫВОД: Проверяем, что скрипт вообще запускается ---
+print("--- Скрипт api/index.py запущен ---")
 
-# --- НОВОЕ: Получение списка ID администраторов ---
-# Мы получаем строку из переменной окружения ADMIN_IDS, например "123,456,789"
-# и превращаем ее в список чисел.
-ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '') # Берем строку, если ее нет - будет пустая строка
-# Превращаем строку в список целых чисел. Пропускаем пустые элементы, если они есть.
-ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
+try:
+    # === НАСТРОЙКИ: Переменные окружения Vercel ===
+    BOT_TOKEN = os.environ.get('BOT_TOKEN')
+    SUPABASE_URL = os.environ.get('SUPABASE_URL')
+    SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
+    ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '')
+
+    # --- ОТЛАДОЧНЫЙ ВЫВОД: Показываем, что мы получили из переменных ---
+    print(f"BOT_TOKEN найден: {'Да' if BOT_TOKEN else 'Нет'}")
+    print(f"SUPABASE_URL найден: {'Да' if SUPABASE_URL else 'Нет'}")
+    print(f"SUPABASE_KEY найден: {'Да' if SUPABASE_KEY else 'Нет'}")
+    print(f"Получена строка ADMIN_IDS: '{ADMIN_IDS_STR}'")
+
+    # --- Превращаем строку в список ID с защитой от ошибок ---
+    ADMIN_IDS = []
+    if ADMIN_IDS_STR:
+        try:
+            # Превращаем строку в список целых чисел. Пропускаем пустые элементы.
+            ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
+            print(f"Список ADMIN_IDS успешно создан: {ADMIN_IDS}")
+        except ValueError as e:
+            print(f"!!! КРИТИЧЕСКАЯ ОШИБКА: Не удалось преобразовать ADMIN_IDS в числа. Проверьте формат строки! Ошибка: {e}")
+            ADMIN_IDS = [] # В случае ошибки оставляем список админов пустым
+
+    # === ИНИЦИАЛИЗАЦИЯ ===
+    bot = Bot(token=BOT_TOKEN)
+    app = Flask(__name__)
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("--- Клиенты Bot и Supabase успешно инициализированы ---")
+
+except Exception as e:
+    # Эта ловушка сработает, если ошибка произошла на самом верхнем уровне (например, нет ключей)
+    print(f"!!! КРИТИЧЕСКАЯ ОШИБКА ПРИ ИНИЦИАЛИЗАЦИИ: {e}")
+    traceback.print_exc()
 
 
-# === URL'ы для кнопок ===
-URL_KNOWLEDGE_BASE = "https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"
-URL_ALMANAC = "https://baza-znaniy-app.vercel.app/"
-URL_OTZIV = "https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"
-
-# === ИНИЦИАЛИЗАЦИЯ ===
-bot = Bot(token=BOT_TOKEN)
-app = Flask(__name__)
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-# --- ФУНКЦИИ ДЛЯ РАБОТЫ С БАЗОЙ ДАННЫХ SUPABASE (без изменений) ---
-
+# --- Функции для работы с базой (без изменений) ---
 async def save_user_async(user_id: int):
+    # ... (код функции без изменений)
     try:
         await asyncio.to_thread(
             supabase.table('users').upsert,
@@ -40,7 +56,7 @@ async def save_user_async(user_id: int):
         print(f"Сохранен или обновлен пользователь с ID: {user_id}")
     except Exception as e:
         print(f"Ошибка при сохранении пользователя {user_id} в Supabase: {e}")
-
+# ... (остальные async функции без изменений)
 async def get_all_user_ids_async() -> list[int]:
     try:
         response = await asyncio.to_thread(
@@ -61,15 +77,13 @@ async def remove_user_async(user_id: int):
     except Exception as e:
         print(f"Ошибка при удалении пользователя {user_id}: {e}")
         
-# --- ОСНОВНЫЕ ОБРАБОТЧИКИ КОМАНД БОТА ---
-
 async def handle_start_async(update: Update):
     user_id = update.message.chat_id
     await save_user_async(user_id)
     keyboard = [
-        [KeyboardButton("База знаний", web_app=WebAppInfo(url=URL_KNOWLEDGE_BASE))],
-        [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url=URL_ALMANAC))],
-        [KeyboardButton("Отзывы и предложения", web_app=WebAppInfo(url=URL_OTZIV))]
+        [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
+        [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url="https://baza-znaniy-app.vercel.app/"))],
+        [KeyboardButton("Отзывы и предложения", web_app=WebAppInfo(url="https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"))]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     await update.message.reply_text(
@@ -93,15 +107,10 @@ async def broadcast_message_async(message_text: str):
             print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 async def handle_admin_command_async(update: Update):
-    # --- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---
-    # Раньше было: if update.message.chat_id != ADMIN_ID:
-    # Теперь мы проверяем, входит ли ID пользователя в список ADMIN_IDS
     if update.message.chat_id not in ADMIN_IDS:
-        return # Если это не админ, просто ничего не делаем
-
+        return
     text_parts = update.message.text.split(' ', 1)
     command = text_parts[0]
-    
     if command == '/broadcast' and len(text_parts) > 1:
         message_to_send = text_parts[1]
         await update.message.reply_text("Начинаю рассылку...")
@@ -118,19 +127,26 @@ async def handle_admin_command_async(update: Update):
             "`/stats`",
             parse_mode='Markdown'
         )
-        
-# --- ГЛАВНЫЙ ВЕБХУК ДЛЯ VERCEL (без изменений) ---
 
+# --- ГЛАВНЫЙ ВЕБХУК ДЛЯ VERCEL ---
 @app.route('/', methods=['POST'])
 def webhook():
-    update_data = request.get_json()
-    if update_data:
-        update = Update.de_json(update_data, bot)
-        if update.message and update.message.text:
-            text = update.message.text
-            if text == '/start':
-                asyncio.run(handle_start_async(update))
-            elif text.startswith('/'):
-                 asyncio.run(handle_admin_command_async(update))
-            
+    # --- ОТЛАДОЧНЫЙ ВЫВОД: Проверяем, что вебхук вызывается ---
+    print("--- Входящий запрос в /webhook ---")
+    try:
+        update_data = request.get_json()
+        if update_data:
+            update = Update.de_json(update_data, bot)
+            if update.message and update.message.text:
+                text = update.message.text
+                print(f"Получено сообщение: '{text}' от пользователя {update.message.chat_id}")
+                if text == '/start':
+                    asyncio.run(handle_start_async(update))
+                elif text.startswith('/'):
+                    asyncio.run(handle_admin_command_async(update))
+    except Exception as e:
+        # Эта ловушка поймает любую ошибку внутри вебхука
+        print(f"!!! КРИТИЧЕСКАЯ ОШИБКА ВНУТРИ ВЕБХУКА: {e}")
+        traceback.print_exc() # Печатаем полную трассировку ошибки
+        
     return 'ok', 200
