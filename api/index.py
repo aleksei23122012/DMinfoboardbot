@@ -13,7 +13,7 @@ SUPABASE_KEY = os.environ.get('SUPABASE_KEY')
 
 # !!! ВАЖНО: Замените 123456789 на ваш настоящий Telegram User ID !!!
 # Чтобы его узнать, напишите боту @userinfobot, он пришлет вам ваш ID.
-ADMIN_ID = 123456789
+ADMIN_ID = 8004572298
 
 # === URL'ы для кнопок (остаются без изменений) ===
 URL_KNOWLEDGE_BASE = "https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"
