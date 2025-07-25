@@ -2,60 +2,82 @@ import os
 import asyncio
 import traceback
 import sys
+import requests # <-- НОВЫЙ ВАЖНЫЙ ИМПОРТ
 from flask import Flask, request
 from telegram import Update, Bot
-from supabase import create_client, Client
+from supabase import create_client, Client # <-- Supabase теперь нужен только для чтения
 
 # === Глобальная область: только создание Flask-приложения ===
 app = Flask(__name__)
 
-
-# === Асинхронные функции-обработчики ===
-async def save_user_async(supabase_client, user_id: int):
-    """Асинхронно сохраняет ID пользователя."""
+# --- НОВАЯ СИНХРОННАЯ ФУНКЦИЯ СОХРАНЕНИЯ ЧЕРЕЗ REQUESTS ---
+def save_user_sync_requests(supabase_url, supabase_key, user_id: int):
+    """СИНХРОННО сохраняет ID пользователя через прямой HTTP-запрос."""
     try:
-        print(f"--- [DB] Попытка upsert для пользователя {user_id}. ---")
-        sys.stdout.flush()
-        await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
-        print(f"--- [DB] УСПЕХ: Пользователь {user_id} сохранен. ---")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"--- [DB] !!! ОШИБКА при сохранении {user_id}: {e} !!! ---")
-        print(traceback.format_exc())
+        print(f"--- [HTTP] Попытка POST-запроса для {user_id}. ---")
         sys.stdout.flush()
 
-async def handle_start_async(bot, supabase_client, update: Update):
+        # Формируем URL и заголовки для прямого запроса к API Supabase
+        url = f"{supabase_url}/rest/v1/users"
+        headers = {
+            "apikey": supabase_key,
+            "Authorization": f"Bearer {supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates" # Команда "upsert": вставить или обновить, если есть
+        }
+        data = { "chat_id": user_id }
+
+        # Выполняем POST-запрос с таймаутом 5 секунд
+        response = requests.post(url, headers=headers, json=data, timeout=5)
+        
+        # Этот лог появится, только если мы получим ответ от сервера
+        print(f"--- [HTTP] ПОЛУЧЕН ОТВЕТ: Статус {response.status_code}, Тело: {response.text} ---")
+        sys.stdout.flush()
+
+        if 200 <= response.status_code < 300:
+            print(f"--- [HTTP] УСПЕХ: Пользователь {user_id} сохранен через HTTP. ---")
+        else:
+            print(f"--- [HTTP] !!! ОШИБКА: Неуспешный статус ответа. ---")
+
+    except requests.exceptions.Timeout:
+        print(f"--- [HTTP] !!! КРИТИЧЕСКАЯ ОШИБКА: Запрос к Supabase отвалился по таймауту! ---")
+    except Exception as e:
+        print(f"--- [HTTP] !!! КРИТИЧЕСКАЯ ОШИБКА при HTTP-запросе: {e} !!!")
+        print(traceback.format_exc())
+    sys.stdout.flush()
+
+
+# --- Асинхронный обработчик, который вызывает синхронную функцию ---
+async def handle_start_async(bot, supabase_url, supabase_key, update: Update):
     """Обрабатывает /start: сначала база, потом ответ."""
     user_id = update.message.chat_id
     
-    # --- ШАГ 1: СНАЧАЛА СОХРАНЯЕМ В БАЗУ ---
-    await save_user_async(supabase_client, user_id)
+    # Сначала вызываем блокирующую функцию сохранения
+    save_user_sync_requests(supabase_url, supabase_key, user_id)
     
-    # --- ШАГ 2: ПОТОМ ОТПРАВЛЯЕМ ОТВЕТ ---
+    # Только после завершения работы с базой отправляем ответ
     await bot.send_message(
         chat_id=user_id,
-        text="Тест Базы Данных: v_db_minimal" # Новое уникальное сообщение
+        text="ФИНАЛЬНЫЙ ТЕСТ: v_requests_final" # Новое уникальное сообщение
     )
-    print(f"--- УСПЕХ: Ответ 'v_db_minimal' для {user_id} отправлен. ---")
 
 
 # === ГЛАВНЫЙ ВЕБХУК ===
 @app.route('/', methods=['POST'])
 def webhook():
-    """Принимает запрос и выполняет минимальную логику."""
     try:
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
         SUPABASE_KEY = os.environ['SUPABASE_KEY']
 
         bot = Bot(token=BOT_TOKEN)
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         
         update_data = request.get_json()
         update = Update.de_json(update_data, bot)
         
         if update.message and update.message.text == '/start':
-            asyncio.run(handle_start_async(bot, supabase, update))
+            # Передаем URL и ключ напрямую в обработчик
+            asyncio.run(handle_start_async(bot, SUPABASE_URL, SUPABASE_KEY, update))
 
     except Exception as e:
         print(f"--- !!! КРИТИЧЕСКАЯ ОШИБКА В ВЕБХУКЕ !!! ---")
