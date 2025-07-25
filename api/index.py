@@ -1,53 +1,39 @@
 import os
 import asyncio
-import traceback
 from flask import Flask, request
-from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
-from supabase import create_client, Client
+from telegram import Update, Bot
 
-# === Глобальная область: только создание Flask-приложения ===
+# === ТОЛЬКО FLASK ===
 app = Flask(__name__)
 
-
-# === Асинхронные функции-обработчики ===
-async def save_user_async(supabase_client, user_id: int):
-    """Асинхронно сохраняет ID пользователя в базу данных Supabase."""
+# === Самый простой обработчик ===
+async def send_final_test_reply(bot, update: Update):
+    """Просто отправляет уникальный ответ."""
     try:
-        # Используем asyncio.to_thread для безопасного выполнения синхронного кода
-        await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
-        # Этот лог появится, только если операция выше успешно завершится
-        print(f"Пользователь {user_id} успешно сохранен/обновлен в Supabase.")
+        await bot.send_message(
+            chat_id=update.message.chat_id,
+            text="ПОБЕДА НАД КЕШЕМ: v_final_barebones" # Уникальный текст, которого не было раньше
+        )
+        print("--- УСПЕХ: ОТВЕТ 'v_final_barebones' ОТПРАВЛЕН ---")
     except Exception as e:
-        print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
+        print(f"--- ОШИБКА в send_final_test_reply: {e} ---")
 
-async def remove_user_async(supabase_client, user_id: int):
-    """Асинхронно удаляет пользователя, который заблокировал бота."""
+
+# === ГЛАВНЫЙ ВЕБХУК: МИНИМАЛЬНАЯ ВЕРСИЯ ===
+@app.route('/', methods=['POST'])
+def webhook():
+    print("--- ВХОД В 'ГОЛЫЙ' ВЕБХУК ---")
     try:
-        await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
-        print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
-    except Exception as e:
-        print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
+        BOT_TOKEN = os.environ['BOT_TOKEN']
+        bot = Bot(token=BOT_TOKEN)
+        
+        update_data = request.get_json()
+        update = Update.de_json(update_data, bot)
+        
+        if update.message and update.message.text == '/start':
+            asyncio.run(send_final_test_reply(bot, update))
 
-# --- ГЛАВНОЕ ИЗМЕНЕНИЕ ЗДЕСЬ ---
-async def handle_start_async(bot, supabase_client, update: Update):
-    """Обрабатывает команду /start ПОСЛЕДОВАТЕЛЬНО."""
-    user_id = update.message.chat_id
-    
-    # --- ШАГ 1: СНАЧАЛА СОХРАНЯЕМ В БАЗУ ---
-    # `await` заставит код остановиться здесь и дождаться завершения.
-    await save_user_async(supabase_client, user_id)
-    
-    # --- ШАГ 2: ТОЛЬКО ПОТОМ ОТПРАВЛЯЕМ ОТВЕТ ---
-    keyboard = [
-        [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei2
-[patch]--- a/telegram_bot.py
-+++ b/telegram_bot.py
-@@ -11,8 +11,6 @@
- # === НАСТРОЙКИ ===
- BOT_TOKEN = os.environ.get('BOT_TOKEN')
- # URL для дашборда здесь больше не нужен, так как он задан в @BotFather,
--# но мы оставим его для ясности и на случай будущих изменений.
--URL_DASHBOARD = "https://aleksei23122012.github.io/DMdashbordbot/Dashboard.htm?v=15" # Новая версия
- URL_KNOWLEDGE_BASE = "https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"
- URL_ALMANAC = "https://baza-znaniy-app.vercel.app/"
- URL_OTZIV = "https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"
+    except Exception as e:
+        print(f"--- ОШИБКА В 'ГОЛОМ' ВЕБХУКЕ: {e} ---")
+            
+    return 'ok', 200
