@@ -5,12 +5,12 @@ from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
 
-# ... (весь код до функции webhook остается без изменений)
 # === Глобальная область: только создание Flask-приложения ===
 app = Flask(__name__)
 
-# ... (все асинхронные функции handle_..., save_user_async и т.д. остаются здесь)
+# === Асинхронные функции-обработчики ===
 async def save_user_async(supabase_client, user_id: int):
+    """Асинхронно сохраняет ID пользователя в базу данных Supabase."""
     try:
         await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
         print(f"Пользователь {user_id} успешно сохранен/обновлен в Supabase.")
@@ -18,6 +18,7 @@ async def save_user_async(supabase_client, user_id: int):
         print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
 
 async def remove_user_async(supabase_client, user_id: int):
+    """Асинхронно удаляет пользователя, который заблокировал бота."""
     try:
         await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
         print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
@@ -25,6 +26,7 @@ async def remove_user_async(supabase_client, user_id: int):
         print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
 
 async def handle_start_async(bot, supabase_client, update: Update):
+    """Обрабатывает команду /start."""
     user_id = update.message.chat_id
     await save_user_async(supabase_client, user_id)
     
@@ -44,6 +46,7 @@ async def handle_start_async(bot, supabase_client, update: Update):
     )
 
 async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_text: str):
+    """Выполняет рассылку сообщения всем пользователям."""
     user_ids = []
     try:
         response = await asyncio.to_thread(supabase_client.table('users').select('chat_id').execute)
@@ -68,6 +71,7 @@ async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_t
     await bot.send_message(chat_id=admin_chat_id, text=f"Рассылка завершена. Отправлено сообщений: {success_count} из {len(user_ids)}.")
 
 async def handle_admin_command_async(bot, supabase_client, update: Update):
+    """Обрабатывает команды администратора (/stats, /broadcast)."""
     text_parts = update.message.text.split(' ', 1)
     command = text_parts[0]
     admin_id = update.message.chat_id
@@ -89,7 +93,6 @@ async def handle_admin_command_async(bot, supabase_client, update: Update):
             parse_mode='Markdown'
         )
 
-
 # === ГЛАВНЫЙ ВЕБХУК: ТОЧКА ВХОДА ДЛЯ TELEGRAM ===
 @app.route('/', methods=['POST'])
 def webhook():
@@ -100,9 +103,6 @@ def webhook():
         SUPABASE_KEY = os.environ['SUPABASE_KEY']
         ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '')
         ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
-
-        # --- НОВАЯ ОТЛАДОЧНАЯ СТРОКА ---
-        print(f"--- [DEBUG] Загруженный список ADMIN_IDS: {ADMIN_IDS}")
 
         bot = Bot(token=BOT_TOKEN)
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
