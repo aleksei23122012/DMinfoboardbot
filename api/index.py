@@ -1,6 +1,7 @@
 import os
 import asyncio
 import traceback
+import sys
 from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
@@ -10,35 +11,37 @@ app = Flask(__name__)
 
 
 # === Асинхронные функции-обработчики ===
-
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Функция теперь принимает `username` ---
 async def save_user_async(supabase_client, user_id: int, username: str):
-    """Асинхронно сохраняет ID и логин пользователя в базу данных Supabase."""
+    """Асинхронно сохраняет ID и логин пользователя с подробным логированием."""
     try:
-        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Вставляем объект с двумя полями ---
+        print(f"--- [DB] Попытка upsert для пользователя {user_id} ({username}). ---")
+        sys.stdout.flush() # Принудительно выводим лог ДО операции
+
         user_data = {'chat_id': user_id, 'username': username}
         await asyncio.to_thread(supabase_client.table('users').upsert, user_data, on_conflict='chat_id')
-        print(f"Пользователь {user_id} ({username}) успешно сохранен/обновлен в Supabase.")
+        
+        # Этот лог появится, только если строка выше успешно выполнится
+        print(f"--- [DB] УСПЕХ: Пользователь {user_id} сохранен. ---")
+        sys.stdout.flush()
     except Exception as e:
-        print(f"!!! ОШИКА при сохранении пользователя {user_id}: {e}")
+        # Этот лог поймает любую ошибку
+        print(f"--- [DB] !!! ОШИБКА при сохранении {user_id}: {e} !!! ---")
+        print(traceback.format_exc())
+        sys.stdout.flush()
 
+# ... (остальной код до webhook остается без изменений)
 async def remove_user_async(supabase_client, user_id: int):
-    """Асинхронно удаляет пользователя, который заблокировал бота."""
     try:
         await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
         print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
     except Exception as e:
         print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
 
-# --- ИЗМЕНЕНИЕ ЗДЕСЬ: Получаем `username` из `update` ---
 async def handle_start_async(bot, supabase_client, update: Update):
-    """Обрабатывает команду /start."""
     user = update.message.from_user
     user_id = user.id
-    # Получаем username. Если его нет, используем пустую строку.
     username = user.username if user.username else ""
     
-    # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Передаем `username` в функцию сохранения ---
     await save_user_async(supabase_client, user_id, username)
     
     keyboard = [
@@ -57,7 +60,6 @@ async def handle_start_async(bot, supabase_client, update: Update):
     )
 
 async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_text: str):
-    # ... (эта функция остается без изменений)
     user_ids = []
     try:
         response = await asyncio.to_thread(supabase_client.table('users').select('chat_id').execute)
@@ -83,7 +85,6 @@ async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_t
 
 
 async def handle_admin_command_async(bot, supabase_client, update: Update):
-    # ... (эта функция остается без изменений)
     text_parts = update.message.text.split(' ', 1)
     command = text_parts[0]
     admin_id = update.message.chat_id
@@ -108,7 +109,6 @@ async def handle_admin_command_async(bot, supabase_client, update: Update):
 # === ГЛАВНЫЙ ВЕБХУК: ТОЧКА ВХОДА ДЛЯ TELEGRAM ===
 @app.route('/', methods=['POST'])
 def webhook():
-    # ... (эта функция остается без изменений)
     try:
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
