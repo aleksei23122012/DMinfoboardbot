@@ -1,139 +1,66 @@
 import os
-import asyncio
 import traceback
+import sys
+import requests
 from flask import Flask, request
-from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
-from supabase import create_client, Client
+from telegram import Update, Bot
 
-# === Глобальная область: только создание Flask-приложения ===
+# === ТОЛЬКО FLASK ===
 app = Flask(__name__)
 
-
-# === Асинхронные функции-обработчики ===
-async def save_user_async(supabase_client, user_id: int, username: str):
-    """Асинхронно сохраняет ID и логин пользователя в базу данных Supabase."""
-    try:
-        user_data = {'chat_id': user_id, 'username': username}
-        # Используем asyncio.to_thread для безопасного выполнения синхронного кода в асинхронном потоке
-        await asyncio.to_thread(supabase_client.table('users').upsert, user_data, on_conflict='chat_id')
-        print(f"Пользователь {user_id} ({username}) успешно сохранен/обновлен в Supabase.")
-    except Exception as e:
-        print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
-
-async def remove_user_async(supabase_client, user_id: int):
-    """Асинхронно удаляет пользователя, который заблокировал бота."""
-    try:
-        await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
-        print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
-    except Exception as e:
-        print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
-
-async def handle_start_async(bot, supabase_client, update: Update):
-    """Обрабатывает команду /start последовательно: сначала база, потом ответ."""
-    user = update.message.from_user
-    user_id = user.id
-    # Получаем username. Если его нет, используем пустую строку.
-    username = user.username if user.username else ""
-    
-    # --- ШАГ 1: СНАЧАЛА СОХРАНЯЕМ В БАЗУ ---
-    # `await` заставит код остановиться здесь и дождаться завершения.
-    await save_user_async(supabase_client, user_id, username)
-    
-    # --- ШАГ 2: ТОЛЬКО ПОТОМ ОТПРАВЛЯЕМ ОТВЕТ ---
-    keyboard = [
-        [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
-        [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url="https://baza-znaniy-app.vercel.app/"))],
-        [KeyboardButton("Отзывы и предложения", web_app=WebAppInfo(url="https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"))]
-    ]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    
-    await update.message.reply_text(
-        "Привет! 😊\n\n"
-        "Чтобы открыть главный дашборд, нажми на кнопку **Дашборд** слева от поля ввода.\n\n"
-        "А с помощью кнопок ниже ты можешь открыть другие полезные разделы.",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_text: str):
-    """Выполняет рассылку сообщения всем пользователям."""
-    user_ids = []
-    try:
-        response = await asyncio.to_thread(supabase_client.table('users').select('chat_id').execute)
-        user_ids = [item['chat_id'] for item in response.data]
-    except Exception as e:
-        print(f"!!! ОШИБКА при получении списка пользователей для рассылки: {e}")
-        await bot.send_message(chat_id=admin_chat_id, text=f"Ошибка получения списка пользователей: {e}")
-        return
-        
-    print(f"Начинаю рассылку для {len(user_ids)} пользователей.")
-    success_count = 0
-    for user_id in user_ids:
-        try:
-            await bot.send_message(chat_id=user_id, text=message_text, parse_mode='Markdown')
-            success_count += 1
-            await asyncio.sleep(0.05) # Небольшая задержка, чтобы не превышать лимиты Telegram
-        except error.Forbidden:
-            await remove_user_async(supabase_client, user_id)
-        except error.TelegramError as e:
-            print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-    
-    await bot.send_message(chat_id=admin_chat_id, text=f"Рассылка завершена. Отправлено сообщений: {success_count} из {len(user_ids)}.")
-
-async def handle_admin_command_async(bot, supabase_client, update: Update):
-    """Обрабатывает команды администратора (/stats, /broadcast)."""
-    text_parts = update.message.text.split(' ', 1)
-    command = text_parts[0]
-    admin_id = update.message.chat_id
-    
-    if command == '/broadcast' and len(text_parts) > 1:
-        message_to_send = text_parts[1]
-        await update.message.reply_text("Начинаю рассылку...")
-        await broadcast_message_async(bot, supabase_client, admin_id, message_to_send)
-    elif command == '/stats':
-        try:
-            # Используем count='exact' для эффективного подсчета строк
-            response = await asyncio.to_thread(supabase_client.table('users').select('chat_id', count='exact').execute)
-            await update.message.reply_text(f"Всего пользователей в базе: {response.count}")
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка получения статистики: {e}")
-    else:
-        await update.message.reply_text(
-            "Неизвестная команда или неверный формат.\n"
-            "Доступные команды:\n`/broadcast <текст>`\n`/stats`",
-            parse_mode='Markdown'
-        )
-
-# === ГЛАВНЫЙ ВЕБХУК: ТОЧКА ВХОДА ДЛЯ TELEGRAM ===
+# === ГЛАВНЫЙ ВЕБХУК: ТОЛЬКО ОДНА ЗАДАЧА - ЗАПИСЬ В БАЗУ ===
 @app.route('/', methods=['POST'])
 def webhook():
-    """Принимает запрос от Telegram, инициализирует все и вызывает нужный обработчик."""
+    print("\n--- [ФИНАЛЬНЫЙ ТЕСТ] Вход в вебхук. ---")
+    sys.stdout.flush()
     try:
-        # === "Ленивая" инициализация при каждом запросе ===
+        # === Получение данных ===
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
         SUPABASE_KEY = os.environ['SUPABASE_KEY']
-        ADMIN_IDS_STR = os.environ.get('ADMIN_IDS', '')
-        ADMIN_IDS = [int(admin_id) for admin_id in ADMIN_IDS_STR.split(',') if admin_id.strip()]
-
-        bot = Bot(token=BOT_TOKEN)
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         
-        # === Обработка запроса ===
+        bot = Bot(token=BOT_TOKEN)
         update_data = request.get_json()
         update = Update.de_json(update_data, bot)
         
-        if update.message and update.message.text:
-            text = update.message.text
-            user_id = update.message.chat_id
-            
-            if text == '/start':
-                asyncio.run(handle_start_async(bot, supabase, update))
-            elif text.startswith('/') and user_id in ADMIN_IDS:
-                asyncio.run(handle_admin_command_async(bot, supabase, update))
+        if not (update.message and update.message.text == '/start'):
+            print("--- [ФИНАЛЬНЫЙ ТЕСТ] Запрос не является командой /start. Выход. ---")
+            return "ok", 200
 
+        user = update.message.from_user
+        user_id = user.id
+        username = user.username if user.username else ""
+
+        print(f"--- [ФИНАЛЬНЫЙ ТЕСТ] Получен /start от {user_id}. Начинаю тест Supabase. ---")
+        sys.stdout.flush()
+
+        # === ПРЯМОЙ HTTP-ЗАПРОС К SUPABASE (САМЫЙ НАДЕЖНЫЙ МЕТОД) ===
+        url = f"{SUPABASE_URL}/rest/v1/users"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates"
+        }
+        data = { "chat_id": user_id, "username": username }
+        
+        print("--- [ФИНАЛЬНЫЙ ТЕСТ] Отправляю POST-запрос в Supabase... ---")
+        sys.stdout.flush()
+        
+        # Выполняем POST-запрос с явным таймаутом в 8 секунд
+        response = requests.post(url, headers=headers, json=data, timeout=8)
+        
+        print(f"--- [ФИНАЛЬНЫЙ ТЕСТ] ПОЛУЧЕН ОТВЕТ ОТ SUPABASE: Статус {response.status_code}, Тело: {response.text} ---")
+        sys.stdout.flush()
+
+    except requests.exceptions.Timeout:
+        print(f"--- [ФИНАЛЬНЫЙ ТЕСТ] !!! КРИТИЧЕСКАЯ ОШИБКА: Запрос к Supabase ОТВАЛИЛСЯ ПО ТАЙМАУТУ! Проблема в сети. ---")
+        sys.stdout.flush()
     except Exception as e:
-        print(f"--- !!! КРИТИЧЕСКАЯ ОШИБКА В ВЕБХУКЕ !!! ---")
+        print(f"--- [ФИНАЛЬНЫЙ ТЕСТ] !!! КРИТИЧЕСКАЯ ОШИБКА: {e} !!! ---")
         print(traceback.format_exc())
+        sys.stdout.flush()
             
+    print("--- [ФИНАЛЬНЫЙ ТЕСТ] Завершение работы вебхука. ---")
+    sys.stdout.flush()
     return 'ok', 200
