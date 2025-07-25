@@ -1,7 +1,6 @@
 import os
 import asyncio
 import traceback
-import sys
 from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
@@ -11,26 +10,17 @@ app = Flask(__name__)
 
 
 # === Асинхронные функции-обработчики ===
-async def save_user_async(supabase_client, user_id: int, username: str):
-    """Асинхронно сохраняет ID и логин пользователя с подробным логированием."""
+async def save_user_async(supabase_client, user_id: int):
+    """Асинхронно сохраняет ТОЛЬКО ID пользователя в базу данных."""
     try:
-        print(f"--- [DB] Попытка upsert для пользователя {user_id} ({username}). ---")
-        sys.stdout.flush() # Принудительно выводим лог ДО операции
-
-        user_data = {'chat_id': user_id, 'username': username}
-        await asyncio.to_thread(supabase_client.table('users').upsert, user_data, on_conflict='chat_id')
-        
-        # Этот лог появится, только если строка выше успешно выполнится
-        print(f"--- [DB] УСПЕХ: Пользователь {user_id} сохранен. ---")
-        sys.stdout.flush()
+        # Используем asyncio.to_thread для безопасного выполнения синхронного кода
+        await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
+        print(f"Пользователь {user_id} успешно сохранен/обновлен в Supabase.")
     except Exception as e:
-        # Этот лог поймает любую ошибку
-        print(f"--- [DB] !!! ОШИБКА при сохранении {user_id}: {e} !!! ---")
-        print(traceback.format_exc())
-        sys.stdout.flush()
+        print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
 
-# ... (остальной код до webhook остается без изменений)
 async def remove_user_async(supabase_client, user_id: int):
+    """Асинхронно удаляет пользователя, который заблокировал бота."""
     try:
         await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
         print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
@@ -38,11 +28,10 @@ async def remove_user_async(supabase_client, user_id: int):
         print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
 
 async def handle_start_async(bot, supabase_client, update: Update):
-    user = update.message.from_user
-    user_id = user.id
-    username = user.username if user.username else ""
-    
-    await save_user_async(supabase_client, user_id, username)
+    """Обрабатывает команду /start."""
+    user_id = update.message.chat_id
+    # Сначала сохраняем пользователя, потом отвечаем
+    await save_user_async(supabase_client, user_id)
     
     keyboard = [
         [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
@@ -60,6 +49,7 @@ async def handle_start_async(bot, supabase_client, update: Update):
     )
 
 async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_text: str):
+    """Выполняет рассылку сообщения всем пользователям."""
     user_ids = []
     try:
         response = await asyncio.to_thread(supabase_client.table('users').select('chat_id').execute)
@@ -83,8 +73,8 @@ async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_t
     
     await bot.send_message(chat_id=admin_chat_id, text=f"Рассылка завершена. Отправлено сообщений: {success_count} из {len(user_ids)}.")
 
-
 async def handle_admin_command_async(bot, supabase_client, update: Update):
+    """Обрабатывает команды администратора (/stats, /broadcast)."""
     text_parts = update.message.text.split(' ', 1)
     command = text_parts[0]
     admin_id = update.message.chat_id
@@ -109,6 +99,7 @@ async def handle_admin_command_async(bot, supabase_client, update: Update):
 # === ГЛАВНЫЙ ВЕБХУК: ТОЧКА ВХОДА ДЛЯ TELEGRAM ===
 @app.route('/', methods=['POST'])
 def webhook():
+    """Принимает запрос от Telegram, инициализирует все и вызывает нужный обработчик."""
     try:
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
