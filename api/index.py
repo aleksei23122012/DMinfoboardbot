@@ -10,12 +10,13 @@ app = Flask(__name__)
 
 
 # === Асинхронные функции-обработчики ===
-async def save_user_async(supabase_client, user_id: int):
-    """Асинхронно сохраняет ТОЛЬКО ID пользователя в базу данных."""
+async def save_user_async(supabase_client, user_id: int, username: str):
+    """Асинхронно сохраняет ID и логин пользователя в базу данных Supabase."""
     try:
-        # Используем asyncio.to_thread для безопасного выполнения синхронного кода
-        await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
-        print(f"Пользователь {user_id} успешно сохранен/обновлен в Supabase.")
+        user_data = {'chat_id': user_id, 'username': username}
+        # Используем asyncio.to_thread для безопасного выполнения синхронного кода в асинхронном потоке
+        await asyncio.to_thread(supabase_client.table('users').upsert, user_data, on_conflict='chat_id')
+        print(f"Пользователь {user_id} ({username}) успешно сохранен/обновлен в Supabase.")
     except Exception as e:
         print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
 
@@ -28,11 +29,17 @@ async def remove_user_async(supabase_client, user_id: int):
         print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
 
 async def handle_start_async(bot, supabase_client, update: Update):
-    """Обрабатывает команду /start."""
-    user_id = update.message.chat_id
-    # Сначала сохраняем пользователя, потом отвечаем
-    await save_user_async(supabase_client, user_id)
+    """Обрабатывает команду /start последовательно: сначала база, потом ответ."""
+    user = update.message.from_user
+    user_id = user.id
+    # Получаем username. Если его нет, используем пустую строку.
+    username = user.username if user.username else ""
     
+    # --- ШАГ 1: СНАЧАЛА СОХРАНЯЕМ В БАЗУ ---
+    # `await` заставит код остановиться здесь и дождаться завершения.
+    await save_user_async(supabase_client, user_id, username)
+    
+    # --- ШАГ 2: ТОЛЬКО ПОТОМ ОТПРАВЛЯЕМ ОТВЕТ ---
     keyboard = [
         [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
         [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url="https://baza-znaniy-app.vercel.app/"))],
@@ -65,7 +72,7 @@ async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_t
         try:
             await bot.send_message(chat_id=user_id, text=message_text, parse_mode='Markdown')
             success_count += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.05) # Небольшая задержка, чтобы не превышать лимиты Telegram
         except error.Forbidden:
             await remove_user_async(supabase_client, user_id)
         except error.TelegramError as e:
@@ -85,6 +92,7 @@ async def handle_admin_command_async(bot, supabase_client, update: Update):
         await broadcast_message_async(bot, supabase_client, admin_id, message_to_send)
     elif command == '/stats':
         try:
+            # Используем count='exact' для эффективного подсчета строк
             response = await asyncio.to_thread(supabase_client.table('users').select('chat_id', count='exact').execute)
             await update.message.reply_text(f"Всего пользователей в базе: {response.count}")
         except Exception as e:
@@ -101,6 +109,7 @@ async def handle_admin_command_async(bot, supabase_client, update: Update):
 def webhook():
     """Принимает запрос от Telegram, инициализирует все и вызывает нужный обработчик."""
     try:
+        # === "Ленивая" инициализация при каждом запросе ===
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
         SUPABASE_KEY = os.environ['SUPABASE_KEY']
@@ -110,6 +119,7 @@ def webhook():
         bot = Bot(token=BOT_TOKEN)
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         
+        # === Обработка запроса ===
         update_data = request.get_json()
         update = Update.de_json(update_data, bot)
         
