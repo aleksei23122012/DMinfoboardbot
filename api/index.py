@@ -1,7 +1,6 @@
 import os
 import asyncio
 import traceback
-import sys # <-- ВАЖНЫЙ ИМПОРТ для принудительной записи логов
 from flask import Flask, request
 from telegram import Update, WebAppInfo, KeyboardButton, ReplyKeyboardMarkup, Bot, error
 from supabase import create_client, Client
@@ -9,54 +8,98 @@ from supabase import create_client, Client
 # === Глобальная область: только создание Flask-приложения ===
 app = Flask(__name__)
 
-# --- НОВАЯ СИНХРОННАЯ ФУНКЦИЯ СОХРАНЕНИЯ ---
-def save_user_sync(supabase_client, user_id: int):
-    """СИНХРОННО сохраняет ID пользователя в базу данных."""
+
+# === Асинхронные функции-обработчики ===
+async def save_user_async(supabase_client, user_id: int):
+    """Асинхронно сохраняет ID пользователя в базу данных Supabase."""
     try:
-        # Принудительно выводим лог ДО операции
-        print(f"--- [DB-SYNC] Попытка upsert для пользователя {user_id}. ---")
-        sys.stdout.flush() 
-
-        # Прямой СИНХРОННЫЙ вызов. Основной поток будет ждать здесь.
-        supabase_client.table('users').upsert({'chat_id': user_id}, on_conflict='chat_id').execute()
-        
-        # Этот лог появится, только если строка выше успешно выполнится
-        print(f"--- [DB-SYNC] УСПЕХ: Пользователь {user_id} сохранен. ---")
-        sys.stdout.flush()
+        # Используем asyncio.to_thread для безопасного выполнения синхронного кода в асинхронном потоке
+        await asyncio.to_thread(supabase_client.table('users').upsert, {'chat_id': user_id}, on_conflict='chat_id')
+        print(f"Пользователь {user_id} успешно сохранен/обновлен в Supabase.")
     except Exception as e:
-        # Этот лог появится, если строка execute() выдаст ошибку
-        print(f"--- [DB-SYNC] !!! ОШИБКА при сохранении {user_id}: {e} !!! ---")
-        print(traceback.format_exc())
-        sys.stdout.flush()
+        print(f"!!! ОШИБКА при сохранении пользователя {user_id}: {e}")
 
-# --- Асинхронный обработчик, который вызывает синхронную функцию ---
+async def remove_user_async(supabase_client, user_id: int):
+    """Асинхронно удаляет пользователя, который заблокировал бота."""
+    try:
+        await asyncio.to_thread(supabase_client.table('users').delete().eq('chat_id', user_id).execute)
+        print(f"Пользователь {user_id} удален из базы (заблокировал бота).")
+    except Exception as e:
+        print(f"!!! ОШИБКА при удалении пользователя {user_id}: {e}")
+
 async def handle_start_async(bot, supabase_client, update: Update):
-    """Обрабатывает /start: сначала синхронная база, потом асинхронный ответ."""
+    """Обрабатывает команду /start."""
     user_id = update.message.chat_id
+    # Сначала сохраняем пользователя, потом отвечаем
+    await save_user_async(supabase_client, user_id)
     
-    # Сначала вызываем блокирующую функцию сохранения
-    save_user_sync(supabase_client, user_id)
-    
-    # Только после завершения работы с базой отправляем ответ
     keyboard = [
         [KeyboardButton("База знаний", web_app=WebAppInfo(url="https://aleksei23122012.teamly.ru/space/00647e86-cd4b-46ef-9903-0af63964ad43/article/17e16e2a-92ff-463c-8bf4-eaaf202c0bc7"))],
         [KeyboardButton("Отработка возражений", web_app=WebAppInfo(url="https://baza-znaniy-app.vercel.app/"))],
         [KeyboardButton("Отзывы и предложения", web_app=WebAppInfo(url="https://docs.google.com/forms/d/e/1FAIpQLSedAPNqKkoJxer4lISLVsQgmu6QpPagoWreyvYOz7DbFuanFw/viewform?usp=header"))]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
     await update.message.reply_text(
-        "Привет! 😊 (sync_final_test)", # Новое уникальное сообщение
+        "Привет! 😊\n\n"
+        "Чтобы открыть главный дашборд, нажми на кнопку **Дашборд** слева от поля ввода.\n\n"
+        "А с помощью кнопок ниже ты можешь открыть другие полезные разделы.",
         reply_markup=reply_markup,
         parse_mode='Markdown'
     )
 
-# ... (handle_admin_command_async можно пока оставить пустым)
-async def handle_admin_command_async(bot, update: Update):
-    pass
+async def broadcast_message_async(bot, supabase_client, admin_chat_id, message_text: str):
+    """Выполняет рассылку сообщения всем пользователям."""
+    user_ids = []
+    try:
+        response = await asyncio.to_thread(supabase_client.table('users').select('chat_id').execute)
+        user_ids = [item['chat_id'] for item in response.data]
+    except Exception as e:
+        print(f"!!! ОШИБКА при получении списка пользователей для рассылки: {e}")
+        await bot.send_message(chat_id=admin_chat_id, text=f"Ошибка получения списка пользователей: {e}")
+        return
+        
+    print(f"Начинаю рассылку для {len(user_ids)} пользователей.")
+    success_count = 0
+    for user_id in user_ids:
+        try:
+            await bot.send_message(chat_id=user_id, text=message_text, parse_mode='Markdown')
+            success_count += 1
+            await asyncio.sleep(0.05) # Небольшая задержка, чтобы не превышать лимиты Telegram
+        except error.Forbidden:
+            await remove_user_async(supabase_client, user_id)
+        except error.TelegramError as e:
+            print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+    
+    await bot.send_message(chat_id=admin_chat_id, text=f"Рассылка завершена. Отправлено сообщений: {success_count} из {len(user_ids)}.")
 
-# === ГЛАВНЫЙ ВЕБХУК ===
+async def handle_admin_command_async(bot, supabase_client, update: Update):
+    """Обрабатывает команды администратора (/stats, /broadcast)."""
+    text_parts = update.message.text.split(' ', 1)
+    command = text_parts[0]
+    admin_id = update.message.chat_id
+    
+    if command == '/broadcast' and len(text_parts) > 1:
+        message_to_send = text_parts[1]
+        await update.message.reply_text("Начинаю рассылку...")
+        await broadcast_message_async(bot, supabase_client, admin_id, message_to_send)
+    elif command == '/stats':
+        try:
+            response = await asyncio.to_thread(supabase_client.table('users').select('chat_id', count='exact').execute)
+            await update.message.reply_text(f"Всего пользователей в базе: {response.count}")
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка получения статистики: {e}")
+    else:
+        await update.message.reply_text(
+            "Неизвестная команда или неверный формат.\n"
+            "Доступные команды:\n`/broadcast <текст>`\n`/stats`",
+            parse_mode='Markdown'
+        )
+
+# === ГЛАВНЫЙ ВЕБХУК: ТОЧКА ВХОДА ДЛЯ TELEGRAM ===
 @app.route('/', methods=['POST'])
 def webhook():
+    """Принимает запрос от Telegram, инициализирует все и вызывает нужный обработчик."""
     try:
         BOT_TOKEN = os.environ['BOT_TOKEN']
         SUPABASE_URL = os.environ['SUPABASE_URL']
@@ -77,11 +120,10 @@ def webhook():
             if text == '/start':
                 asyncio.run(handle_start_async(bot, supabase, update))
             elif text.startswith('/') and user_id in ADMIN_IDS:
-                asyncio.run(handle_admin_command_async(bot, update))
+                asyncio.run(handle_admin_command_async(bot, supabase, update))
 
     except Exception as e:
         print(f"--- !!! КРИТИЧЕСКАЯ ОШИБКА В ВЕБХУКЕ !!! ---")
         print(traceback.format_exc())
-        sys.stdout.flush()
             
     return 'ok', 200
